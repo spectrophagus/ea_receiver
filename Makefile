@@ -2,7 +2,7 @@ BIN:=ea_receiver
 CC=gcc
 SRCPATH=.
 CFLAGS=-std=c99 -Wall -Wextra -I $(SRCPATH)
-LDFLAGS=-lm
+LDFLAGS=-lm -static
 INSTALL_PREFIX=/usr/local
 
 all: CFLAGS += -O3
