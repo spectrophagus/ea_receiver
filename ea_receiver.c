@@ -24,6 +24,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
+#include <sys/time.h>
 
 #define DEFAULT_NUM_CHANNELS  6
 
@@ -52,7 +54,12 @@ struct globals {
   uint8_t state;
 } g;
 
-float u8f_table[UINT8_MAX];
+typedef union {
+  uint16_t u;
+  int16_t s;
+} mix16_t;
+
+float s16f_table[UINT16_MAX];
 
 void usage()
 {
@@ -106,13 +113,19 @@ bool validate_crc(uint8_t *msg, uint16_t len)
 // Called when a message has been received
 void on_message(uint8_t *msg, uint16_t len)
 {
-  if (validate_crc(msg, len)) {
-    for (uint16_t i = 0; i < len; i++) {
-      printf("%02x", msg[i]);
-    }
-    printf("\n");
-    fflush(stdout);
+  bool valid = validate_crc(msg, len);
+  struct timeval now;
+
+  assert(0 == gettimeofday(&now, NULL));
+  double fnow = (double) now.tv_usec / 1000000.0 + now.tv_sec;
+
+  // Print all messages with microsecond timestamps, including CRC failures
+  printf("%.6f\t%s\t", fnow, (valid ? "valid" : "invalid"));
+  for (uint16_t i = 0; i < len; i++) {
+    printf("%02x", msg[i]);
   }
+  printf("\n");
+  fflush(stdout);
 }
 
 // Called when a symbol has been received
@@ -194,11 +207,11 @@ void on_symbol(uint8_t symbol)
   }
 }
 
-// Convert an 8-bit i/q sample to complex floating point
-float complex cu8_to_cf(uint8_t i, uint8_t q)
+// Convert a signed 16-bit i/q sample to complex floating point
+float complex cs16_to_cf(int16_t i, int16_t q)
 {
-  float fi = u8f_table[i];
-  float fq = u8f_table[q];
+  float fi = s16f_table[((mix16_t *) &i)->u];
+  float fq = s16f_table[((mix16_t *) &q)->u];
   return fi + fq * I;
 }
 
@@ -225,7 +238,9 @@ uint8_t calc_symbol_count(uint8_t sample_count)
 void run()
 {
   int i, j, n;
-  uint8_t *samples, symbol, symbol_count, high_symbol, low_symbol, noise_count;
+  //uint8_t *samples, symbol, symbol_count, high_symbol, low_symbol, noise_count;
+  uint8_t symbol, symbol_count, high_symbol, low_symbol, noise_count;
+  int16_t *samples;
   uint16_t sample_count;
   uint32_t block_size;
   float complex sample, last_sample;
@@ -243,7 +258,8 @@ void run()
   }
 
   block_size = BLOCK_SIZE * o.num_channels;
-  samples = calloc(block_size, sizeof(uint8_t) * 2);
+  //samples = calloc(block_size, sizeof(uint8_t) * 2);
+  samples = calloc(block_size, sizeof(int16_t) * 2);
 
   sample = last_sample = 0.0f;
   angle = last_angle = 0.0f;
@@ -251,7 +267,7 @@ void run()
   symbol_count = 0;
   noise_count = 0;
 
-  while ((n = fread(samples, sizeof(uint8_t) * 2, block_size, o.input)) > 0) {
+  while ((n = fread(samples, sizeof(int16_t) * 2, block_size, o.input)) > 0) {
 
     // You may notice that we're not properly shifting and filtering
     // (channelizing) the input. That's because we want to (ab)use aliasing to
@@ -262,7 +278,13 @@ void run()
     for (i = 0; i < n; i += o.num_channels) {
 
       // Convert to a complex float for ease of use with atan2 later
-      sample = cu8_to_cf(samples[i*2], samples[i*2+1]);
+      sample = cs16_to_cf(samples[i*2], samples[i*2+1]);
+
+      // Compute average of oversampled signal
+      for (j = 1; j < o.num_channels; j++) {
+        sample += cs16_to_cf(samples[(i + j)*2], samples[(i + j)*2+1]);
+      }
+      sample /= (float) o.num_channels;
 
       // Calcuate the angle between the last sample and this one to determine
       // if we are measuring a negative or positve instantaneous frequency.
@@ -305,13 +327,16 @@ void run()
 
 void init()
 {
-  // Precompute the mapping between unsigned 8-bit integers and their
+  // Precompute the mapping between unsigned signed 16-bit integers and their
   // floating-point equivalents to reduce CPU usage.
-  for (int i = 0; i < UINT8_MAX; i++) {
-    float f = i;
-    f -= INT8_MAX;
-    f /= INT8_MAX;
-    u8f_table[i] = f;
+  float f;
+  for (unsigned int i = 0; i < UINT16_MAX; i++) {
+    mix16_t j;
+    j.u = i;
+    f = -1 * j.s;
+    f /= INT16_MAX;
+    s16f_table[i] = f;
+    //fprintf(stderr, "%d\t%f\n", i, f);
   }
 }
 
